@@ -29,7 +29,18 @@ router.get('/tracks', (req, res) => {
 
 router.post('/tracks', (req, res) => {
   mongoHandler.insertTrack(req.body.name, req.body.duration, req.body.album, res).then()
-  console.log(1)
+})
+
+router.post('/users', (req, res) => {
+  mongoHandler.insertProfile(req.body.username, req.body.password, res).then()
+})
+
+router.post('/users/sessions', (req, res) => {
+  mongoHandler.login(req.body.username, req.body.password, res).then()
+})
+
+router.post('/track_history', (req, res) => {
+  mongoHandler.appendHistory(req.get('Token'), req.body.track, res).then()
 })
 
 module.exports = router
