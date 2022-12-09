@@ -5,15 +5,26 @@ const bcrypt = require('bcrypt');
 const client = new MongoClient('mongodb://localhost:27017')
 
 const mongoHandler = {
+  userTests: async (token) => {
+    const users = await client.db('Last-FM').collection('Users')
+    const isUserLogged = await users.findOne({token: token})
+    if (isUserLogged !== null) {
+      return {success: true, status: 200, text: 'Успешно'}
+    }
+    return {success: false, status: 403, text: 'Пользователь не авторизован'}
+  },
   ifElementExists: async (collection, params) => {
     return await collection.findOne(params) !== null;
   },
-  insertArtist: async (name, photo, info, res) => {
+  insertArtist: async (name, photo, info, token, res) => {
     try {
       await client.connect()
       const collection = await client.db('Last-FM').collection('Artists')
-      await collection.insertOne({name: name, photo: photo, info: info, _id: new ObjectId()})
-      res.status(201).send('Успешно')
+      const userInfo = await mongoHandler.userTests(token)
+      if (userInfo.success) {
+        await collection.insertOne({name: name, photo: photo, info: info, _id: new ObjectId()})
+      }
+      res.status(userInfo.status).send(userInfo.text)
       await client.close()
     } catch (e) {
       res.status(500).send('Ошибка')
@@ -30,16 +41,20 @@ const mongoHandler = {
       res.status(500).send('Ошибка')
     }
   },
-  insertAlbums: async (name, artist, year, photo, res) => {
+  insertAlbums: async (name, artist, year, photo, token, res) => {
     try {
       await client.connect()
       const collection = await client.db('Last-FM').collection('Albums')
       const artists = await client.db('Last-FM').collection('Artists')
-      if (await mongoHandler.ifElementExists(artists, {artist: artist})) {
-        await collection.insertOne({name: name, artist: artist, year: year, photo: photo, _id: new ObjectId()})
-        res.status(201).send('Успешно')
+      const userInfo = await mongoHandler.userTests(token)
+      if (userInfo.success) {
+        if (await mongoHandler.ifElementExists(artists, {artist: artist})) {
+          await collection.insertOne({name: name, artist: artist, year: year, photo: photo, _id: new ObjectId()})
+        } else {
+          res.status(404).send('Нельзя создать альбом с несуществующим автором')
+        }
       } else {
-        res.status(404).send('Нельзя создать альбом с несуществующим автором')
+        res.status(userInfo.status).send(userInfo.text)
       }
       await client.close()
     } catch (e) {
@@ -66,16 +81,20 @@ const mongoHandler = {
       res.status(500).send('Ошибка')
     }
   },
-  insertTrack: async (name, duration, album, res) => {
+  insertTrack: async (name, duration, album, music, token, res) => {
     try {
       await client.connect()
       const collection = await client.db('Last-FM').collection('Tracks')
       const albums = await client.db('Last-FM').collection('Albums')
-      if (await mongoHandler.ifElementExists(albums, {name: album})) {
-        await collection.insertOne({name: name, album: album, duration: duration})
-        res.status(201).send('Успешно')
+      const userInfo = await mongoHandler.userTests(token)
+      if (userInfo.success) {
+        if (await mongoHandler.ifElementExists(albums, {name: album})) {
+          await collection.insertOne({name: name, album: album, duration: duration, music: music})
+        } else {
+          res.status(404).send('Нельзя создать трек с несуществующим альбомом')
+        }
       } else {
-        res.status(404).send('Нельзя создать трек с несуществующим альбомом')
+        res.status(userInfo.status).send(userInfo.text)
       }
       await client.close()
     } catch (e) {
@@ -101,20 +120,13 @@ const mongoHandler = {
   insertProfile: async (username, password, res) => {
     try {
       await client.connect()
-      const collection = await client.db('todo').collection('users')
-      let isProfileExists = false
-      await collection.findOne({username: username}).then(response => {
-        if (response) {
-          if (username === response.username) {
-            isProfileExists = true
-          }
-        }
-      })
-      if (isProfileExists) {
+      const collection = await client.db('Last-FM').collection('Users')
+      const profile = await collection.findOne({username: username})
+      if (profile && 'username' in profile && username === profile.username) {
         res.status(403).send('Пользователь с таким username уже существует')
       } else {
         let securePassword
-        await bcrypt.hash(password, 5).then(function(hash) {
+        await bcrypt.hash(password, 2).then(function(hash) {
           securePassword = hash
         });
         await collection.insertOne({username: username, password: securePassword, _id: new ObjectId()}).then()
@@ -138,17 +150,16 @@ const mongoHandler = {
       if (profile !== null) {
         await bcrypt.compare(password, profile.password).then(function (result) {
           isPasswordCorrect = result
-          console.log(result)
         })
         if (isPasswordCorrect) {
           await collection.updateOne(
             {username: username, password: profile.password},
             {$set: {token: token}}).then(() => {
-              res.status(201).send({token: token})
+              res.status(201).send(token)
             }
           )
         } else {
-          res.status(418).send('Не правильный пароль пупсик')
+          res.status(418).send('Неправильный пароль пупсик')
         }
       } else {
         res.status(404).send('Пользователь не найден')
@@ -158,32 +169,44 @@ const mongoHandler = {
       res.status(500).send('Ошибка')
     }
   },
+  logout: async (username, token, res) => {
+    try {
+      await client.connect()
+      const collection = await client.db('Last-FM').collection('Users')
+      const userInfo = await mongoHandler.userTests(token)
+      if (userInfo.success) {
+        await collection.updateOne({username: username, token: token}, {$unset: {token: ''}})
+      }
+      res.status(userInfo.status).send(userInfo.text)
+      await client.close()
+    } catch (e) {
+      res.status(500).send('Ошибка')
+    }
+  },
   appendHistory: async (token, track, res) => {
     try {
       await client.connect()
       const collection = await client.db('Last-FM').collection('TracksHistory')
-      const users = await client.db('Last-FM').collection('Users')
       const tracks =  await client.db('Last-FM').collection('Tracks')
       let trackInfo
       await tracks.findOne({_id: new ObjectId(track)}).then(response => {
         trackInfo = response
       })
-      let userInfo
-      await users.findOne({token: token}).then(response => {
-        userInfo = response
-      })
-      if (userInfo !== null && trackInfo !== null) {
-        await collection.insertOne({name: userInfo.token, track: track, datetime: new Date().toISOString(), _id: new ObjectId()})
-        res.status(201).send('Успешно')
-      } else if (userInfo === null) {
-        res.status(401).send('Вы не авторизованы')
-      } else {
+      const userInfo = await mongoHandler.userTests(token)
+      if (userInfo.success && trackInfo !== null) {
+        await collection.insertOne({user: token, track: track, datetime: new Date().toISOString(), _id: new ObjectId()})
+        res.status(200)
+      } else if (trackInfo === null) {
         res.status(404).send('Трек не был найден.')
+      } else {
+        res.status(userInfo.status).send(userInfo.text)
       }
+      await client.close()
     } catch (e) {
       res.status(500).send('Ошибка')
     }
-  }
+  },
+
 }
 
 module.exports = mongoHandler
